@@ -13,7 +13,8 @@ import { localFs, sshFs } from "../src/fs-ops.js";
 import { readSshFlag, resolveSshState, type SshState } from "../src/ssh.js";
 import { extractMarkdownLinks } from "../src/markdown.js";
 import {
-  buildContextBlock,
+  formatRootContent,
+  formatLinkedFilesBlock,
   collectLinkedFiles,
   findAgentsDir,
   findRootFile,
@@ -54,7 +55,10 @@ export default function (pi: ExtensionApi) {
       }
     }
 
-    const contextBlock = buildContextBlock([root, ...linked]);
+    const contextBlock = [
+      formatRootContent(root),
+      formatLinkedFilesBlock(linked),
+    ].filter(Boolean).join("\n\n");
     return { systemPrompt: `${event.systemPrompt}\n\n${contextBlock}` };
   });
 }

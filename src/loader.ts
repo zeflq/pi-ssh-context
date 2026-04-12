@@ -233,30 +233,24 @@ export async function collectLinkedFiles(
   return result;
 }
 
-export function buildContextBlock(files: LoadedFile[]): string {
-  const sections: string[] = [];
-  const full = files.filter(f => f.content !== null);
-  const partial = files.filter(f => f.content === null);
+export function formatRootContent(file: LoadedFile): string {
+  return `## Agent Context\n\n${file.content!.trim()}`;
+}
 
-  if (full.length > 0) {
-    sections.push("## Agent Context\n");
-    for (const f of full) {
-      sections.push(f.content!.trim());
-      sections.push("");
-    }
-  }
-
-  if (partial.length > 0) {
-    sections.push(
-      "## Available Content Files (not auto-loaded)\n" +
-      "Use the 'read' tool on the path shown below whenever a file's description " +
-      "is relevant to the current task.\n"
-    );
-    for (const f of partial) {
-      sections.push(`\`${f.filePath}\` — ${f.description}`);
-    }
-    sections.push("");
-  }
-
-  return sections.join("\n");
+export function formatLinkedFilesBlock(files: LoadedFile[]): string {
+  if (files.length === 0) return "";
+  const escape = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  const lines = [
+    "## Available Content Files (not auto-loaded)\n",
+    "Use the 'read' tool on the path shown below whenever a file's description is relevant to the current task.\n",
+    "<available_files>",
+    ...files.flatMap(f => [
+      "  <file>",
+      `    <path>${escape(f.filePath)}</path>`,
+      `    <description>${escape(f.description)}</description>`,
+      "  </file>",
+    ]),
+    "</available_files>",
+  ];
+  return lines.join("\n");
 }
