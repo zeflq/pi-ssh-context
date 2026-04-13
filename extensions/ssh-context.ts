@@ -1,22 +1,21 @@
 /**
- * SSH parity extension (layers 0 & 1).
+ * SSH parity extension.
  *
- * Replicates pi's local resource loading on the remote machine over SSH:
- *   Layer 0 — SYSTEM.md + APPEND_SYSTEM.md
- *   Layer 1 — AGENTS.md / CLAUDE.md walk-up + skills
- *
- * No-ops when --ssh is not active (pi handles it natively).
+ * Replicates pi's remote resource loading over SSH (only when --ssh is active;
+ * pi handles local natively):
+ *   resources_discover — exposes remote skill paths to pi's native loader
+ *   before_agent_start — Layer 0: SYSTEM.md / APPEND_SYSTEM.md
+ *                        Layer 1: AGENTS.md / CLAUDE.md walk-up
  */
 
 import type { ExtensionApi } from "@mariozechner/pi-coding-agent";
+import { join as posixJoin } from "node:path/posix";
 import { sshExec, sshFs } from "../src/fs-ops.js";
 import { readSshFlag, resolveSshState, type SshState } from "../src/ssh.js";
 import {
+  CONFIG_DIR_NAMES,
   collectAncestorSkillDirs,
-  formatSkillsBlock,
   loadProjectContextFiles,
-  loadRemoteSkills,
-  mergeSkills,
   readFileFromDir,
 } from "../src/loader.js";
 
@@ -27,9 +26,43 @@ export default function (pi: ExtensionApi) {
     ? resolveSshState(sshFlag).then((s) => { sshState = s; })
     : Promise.resolve();
 
+  // Returns git root resolved from the remote cwd (not the SSH session's home dir).
+  async function getRemoteGitRoot(remote: string, cwd: string): Promise<string | null> {
+    const out = await sshExec(remote, `cd ${JSON.stringify(cwd)} && git rev-parse --show-toplevel 2>/dev/null || true`)
+      .catch(() => "");
+    return out.trim() || null;
+  }
+
+  // Expose remote skill paths to pi's native loader so they appear in the
+  // debug panel and are registered as /skill:name commands.
+  // For localhost paths are identical on disk and load natively.
+  // For true remote hosts pi silently skips non-existent local paths.
+  pi.on("resources_discover", async () => {
+    await sshStateReady;
+    if (!sshState) return;
+
+    const cwd = sshState.remoteCwd;
+    const fs = sshFs(sshState.remote);
+    const gitRoot = await getRemoteGitRoot(sshState.remote, cwd);
+
+    // pi-mono project skill locations:
+    //   .pi/skills/            (allowRootMd=true)
+    //   .agents/skills/ + ancestors up to git root (allowRootMd=false)
+    const candidates = [
+      ...CONFIG_DIR_NAMES.map(name => posixJoin(cwd, name, "skills")),
+      ...collectAncestorSkillDirs(fs, cwd, gitRoot),
+    ];
+
+    const skillPaths = (
+      await Promise.all(candidates.map(async p => (await fs.exists(p)) ? p : null))
+    ).filter((p): p is string => p !== null);
+
+    return { skillPaths };
+  });
+
   pi.on("before_agent_start", async (event: { systemPrompt: string }) => {
     await sshStateReady;
-    if (!sshState) return; // local: pi handles natively
+    if (!sshState) return;
 
     const fs = sshFs(sshState.remote);
     const cwd = sshState.remoteCwd;
@@ -39,42 +72,27 @@ export default function (pi: ExtensionApi) {
     let appendPrompt = "";
 
     // Layer 0: SYSTEM.md + APPEND_SYSTEM.md
-    const remoteConfigDir = fs.join(cwd, ".pi");
-    const systemMd =
-      await readFileFromDir(fs, remoteConfigDir, "SYSTEM.md") ??
-      await readFileFromDir(fs, agentDir, "SYSTEM.md");
+    // Try each config dir (.pi, .claude, .agents) at cwd in order, then agentDir as fallback.
+    let systemMd: string | null = null;
+    let appendMd: string | null = null;
+    for (const name of CONFIG_DIR_NAMES) {
+      const configDir = fs.join(cwd, name);
+      if (!systemMd) systemMd = await readFileFromDir(fs, configDir, "SYSTEM.md");
+      if (!appendMd) appendMd = await readFileFromDir(fs, configDir, "APPEND_SYSTEM.md");
+      if (systemMd && appendMd) break;
+    }
+    systemMd ??= await readFileFromDir(fs, agentDir, "SYSTEM.md");
+    appendMd ??= await readFileFromDir(fs, agentDir, "APPEND_SYSTEM.md");
     if (systemMd) systemPrompt = systemMd;
-
-    const appendMd =
-      await readFileFromDir(fs, remoteConfigDir, "APPEND_SYSTEM.md") ??
-      await readFileFromDir(fs, agentDir, "APPEND_SYSTEM.md");
     if (appendMd) appendPrompt = appendMd;
 
-    // Layer 1: AGENTS.md / CLAUDE.md walk-up + skills
+    // Layer 1: AGENTS.md / CLAUDE.md — exact uppercase, walk up from remote cwd.
     const contextFiles = await loadProjectContextFiles(fs, cwd, agentDir);
     if (contextFiles.length > 0) {
       const projectContext = contextFiles
         .map(f => `## ${f.path}\n\n${f.content}`)
         .join("\n\n");
       systemPrompt = `${systemPrompt}\n\n# Project Context\n\n${projectContext}`;
-    }
-
-    // Skills — mirrors pi's four locations:
-    //   global:  ~/.pi/agent/skills/  and  ~/.agents/skills/
-    //   project: <cwd>/.pi/skills/    and  <cwd>/.agents/skills/ (walk up to git root)
-    const gitRoot = (await sshExec(sshState.remote, "git rev-parse --show-toplevel 2>/dev/null || true").catch(() => "")).trim() || null;
-    const agentsGlobalSkillsDir = (await sshExec(sshState.remote, "echo ~/.agents/skills")).trim();
-
-    const skillBatches = await Promise.all([
-      loadRemoteSkills(fs, fs.join(agentDir, "skills")),
-      loadRemoteSkills(fs, agentsGlobalSkillsDir),
-      loadRemoteSkills(fs, fs.join(cwd, ".pi", "skills")),
-      ...collectAncestorSkillDirs(fs, cwd, gitRoot).map(dir => loadRemoteSkills(fs, dir)),
-    ]);
-
-    const skills = mergeSkills(...skillBatches);
-    if (skills.length > 0) {
-      systemPrompt = `${systemPrompt}${formatSkillsBlock(skills)}`;
     }
 
     return {

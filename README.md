@@ -11,16 +11,19 @@ When you run pi with `--ssh`, the agent operates on the remote machine but pi's 
 This extension replicates pi's full resource loading pipeline on the remote machine over SSH:
 
 **Layer 0 — system prompt files:**
-- Loads `SYSTEM.md` from remote `.pi/` (then `~/.pi/agent/` as fallback) → replaces base system prompt
+- Loads `SYSTEM.md` from remote `.pi/`, `.claude/`, or `.agents/` (first found), then `~/.pi/agent/` as fallback → replaces base system prompt
 - Loads `APPEND_SYSTEM.md` from same locations → appended at the very end
 
-**Layer 1 — project context + skills:**
-- Walks up from remote cwd to root collecting `AGENTS.md` / `CLAUDE.md` → injected as `# Project Context`
-- Scans remote `.pi/skills/` for `SKILL.md` files → injected as `<available_skills>` XML
+**Layer 1 — project context:**
+- Walks up from remote cwd to root collecting `AGENTS.md` / `CLAUDE.md` (exact uppercase) → injected as `# Project Context`; at each level checks the directory directly and inside each config subdir (`.pi/`, `.claude/`, `.agents/`)
+- Also checks `~/.pi/agent/AGENTS.md` (or `CLAUDE.md`) as the global user context file, loaded first
+
+**Skills — via `resources_discover`:**
+- Exposes remote skill paths to pi's native loader so they appear in the debug panel and as `/skill:name` commands
+- Checks `.pi/skills/`, `.claude/skills/`, `.agents/skills/` at cwd, plus `.agents/skills/` in every ancestor up to the git root
+- Git root is resolved relative to the remote cwd (not the SSH session's home dir)
 
 No-ops when `--ssh` is not active — pi handles local loading natively.
-
-> **Known limitation:** the remote skills scan uses a heuristic to distinguish files from directories (entries without a `.` are assumed to be dirs), because the SSH fs abstraction only returns entry names, not types.
 
 ---
 
@@ -61,7 +64,7 @@ description: Use this file when deploying to staging or production.
 ...
 ```
 
-**Supported config directories** (tried in order): `.pi`, `.claude`, `.agent`
+**Supported config directories** (tried in order): `.pi`, `.claude`, `.agents`
 
 ---
 

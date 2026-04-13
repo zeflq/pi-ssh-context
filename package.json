@@ -1,6 +1,6 @@
 {
   "name": "pi-context",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Two pi extensions: SSH context parity (SYSTEM.md, AGENTS.md, skills over SSH) and a link-following context graph (agents.md) for .pi, .claude, or .agent projects",
   "license": "MIT",
   "pi": {

@@ -2,7 +2,7 @@ import type { FsOps } from "./fs-ops.js";
 import { extractMarkdownLinks, parseFrontmatter } from "./markdown.js";
 
 /** Config directory names tried in order. */
-const CONFIG_DIR_NAMES = [".pi", ".claude", ".agents"];
+export const CONFIG_DIR_NAMES = [".pi", ".claude", ".agents"];
 
 /** Root filename match (case-insensitive). */
 const ROOT_FILE_LOWER = "agents.md";
@@ -16,15 +16,21 @@ export interface LoadedFile {
 // — Directory / file discovery —
 
 /**
- * Returns the first config dir at cwd that contains agents.md, null otherwise.
- * Tries .pi, .claude, .agent in order — no walk-up.
+ * Returns the closest dir (cwd → root) that contains agents.md, null if none found.
+ * At each level checks the directory directly, then .pi, .claude, .agents in order.
  */
 export async function findAgentsDir(fs: FsOps, cwd: string): Promise<string | null> {
-  for (const name of CONFIG_DIR_NAMES) {
-    const candidate = fs.join(cwd, name);
-    if (!await fs.exists(candidate)) continue;
-    const entries = await fs.list(candidate);
-    if (entries.some(e => e.toLowerCase() === ROOT_FILE_LOWER)) return candidate;
+  let currentDir = cwd.length > 1 && cwd.endsWith("/") ? cwd.slice(0, -1) : cwd;
+  while (true) {
+    const searchDirs = [currentDir, ...CONFIG_DIR_NAMES.map(n => fs.join(currentDir, n))];
+    for (const candidate of searchDirs) {
+      if (!await fs.exists(candidate)) continue;
+      const entries = await fs.list(candidate);
+      if (entries.some(e => e.toLowerCase() === ROOT_FILE_LOWER)) return candidate;
+    }
+    const parent = fs.dirname(currentDir);
+    if (parent === currentDir) break;
+    currentDir = parent;
   }
   return null;
 }
@@ -51,10 +57,48 @@ export async function readFileFromDir(fs: FsOps, dir: string, filename: string):
 
 // — Project context and skills —
 
+/** Context file candidates, tried in order — uppercase only, matching pi-mono. */
+const CONTEXT_FILE_NAMES = ["AGENTS.md", "CLAUDE.md"] as const;
+
+/**
+ * Walks UP from cwd to root collecting AGENTS.md (or CLAUDE.md) from every directory.
+ * At each level checks the directory directly, then inside .pi/, .claude/, .agents/ (first match wins).
+ * Uses exact-case lookup (uppercase only) matching pi-mono behavior.
+ * Returns files in order: root → ... → cwd. No global agentDir fallback.
+ */
+export async function walkUpContextFiles(
+  fs: FsOps,
+  cwd: string,
+): Promise<Array<{ path: string; content: string }>> {
+  const result: Array<{ path: string; content: string }> = [];
+  const seenPaths = new Set<string>();
+  let currentDir = cwd.length > 1 && cwd.endsWith("/") ? cwd.slice(0, -1) : cwd;
+  while (true) {
+    const searchDirs = [currentDir, ...CONFIG_DIR_NAMES.map(n => fs.join(currentDir, n))];
+    const levelFiles: Array<{ path: string; content: string }> = [];
+    for (const dir of searchDirs) {
+      for (const filename of CONTEXT_FILE_NAMES) {
+        const path = fs.join(dir, filename);
+        if (seenPaths.has(path)) break;
+        const content = await fs.read(path);
+        if (content !== null) {
+          levelFiles.push({ path, content });
+          seenPaths.add(path);
+          break;
+        }
+      }
+    }
+    result.unshift(...levelFiles);
+    const parent = fs.dirname(currentDir);
+    if (parent === currentDir) break; // reached filesystem root
+    currentDir = parent;
+  }
+  return result;
+}
+
 /**
  * Mirrors pi's loadProjectContextFiles over the given fs.
- * Walks UP from cwd to root collecting AGENTS.md or CLAUDE.md from every directory.
- * Also checks agentDir (~/.pi/agent/) first, same as pi.
+ * Checks agentDir (~/.pi/agent/) first, then delegates to walkUpContextFiles.
  * Returns files in order: agentDir → root → ... → cwd.
  */
 export async function loadProjectContextFiles(
@@ -63,39 +107,18 @@ export async function loadProjectContextFiles(
   agentDir: string,
 ): Promise<Array<{ path: string; content: string }>> {
   const contextFiles: Array<{ path: string; content: string }> = [];
-  const seenPaths = new Set<string>();
 
   // Global agentDir first (~/.pi/agent/AGENTS.md or CLAUDE.md)
-  for (const filename of ["AGENTS.md", "CLAUDE.md"]) {
-    const content = await readFileFromDir(fs, agentDir, filename);
+  for (const filename of CONTEXT_FILE_NAMES) {
+    const path = fs.join(agentDir, filename);
+    const content = await fs.read(path);
     if (content !== null) {
-      const path = fs.join(agentDir, filename);
       contextFiles.push({ path, content });
-      seenPaths.add(path);
       break;
     }
   }
 
-  // Walk up from cwd to root, collect ancestor files
-  const ancestorFiles: Array<{ path: string; content: string }> = [];
-  let currentDir = cwd;
-  while (true) {
-    for (const filename of ["AGENTS.md", "CLAUDE.md"]) {
-      const filePath = fs.join(currentDir, filename);
-      if (seenPaths.has(filePath)) break;
-      const content = await readFileFromDir(fs, currentDir, filename);
-      if (content !== null) {
-        ancestorFiles.unshift({ path: filePath, content });
-        seenPaths.add(filePath);
-        break;
-      }
-    }
-    const parent = fs.dirname(currentDir);
-    if (parent === currentDir) break; // reached filesystem root
-    currentDir = parent;
-  }
-
-  contextFiles.push(...ancestorFiles);
+  contextFiles.push(...await walkUpContextFiles(fs, cwd));
   return contextFiles;
 }
 
@@ -105,7 +128,8 @@ export async function loadProjectContextFiles(
  */
 export function collectAncestorSkillDirs(fs: FsOps, cwd: string, gitRoot: string | null): string[] {
   const dirs: string[] = [];
-  let dir = cwd;
+  // Normalize trailing slash to avoid duplicating the first directory
+  let dir = cwd.length > 1 && cwd.endsWith("/") ? cwd.slice(0, -1) : cwd;
   while (true) {
     dirs.push(fs.join(dir, ".agents", "skills"));
     if (gitRoot && dir === gitRoot) break;
@@ -135,64 +159,68 @@ export function mergeSkills(
   return result;
 }
 
+type Skill = { name: string; description: string; filePath: string };
+
 /**
- * Recursively scans a remote skills directory for SKILL.md files.
- * Mirrors pi's loadSkillsFromDir behavior.
- * Returns skills as { name, description, filePath }.
+ * Loads a single SKILL.md file into a Skill, or null if invalid.
+ */
+async function loadSkillFile(fs: FsOps, filePath: string): Promise<Skill | null> {
+  const raw = await fs.read(filePath);
+  if (!raw) return null;
+  const { fromMatter } = parseFrontmatter(raw);
+  const description = fromMatter["description"]?.trim();
+  if (!description) return null;
+  const name = fromMatter["name"] || filePath.split("/").slice(-2, -1)[0] || "unknown";
+  return { name, description, filePath };
+}
+
+/**
+ * Scans a skills directory mirroring pi-mono's two discovery modes:
+ *
+ *   allowRootMd = true  (~/.pi/agent/skills/, .pi/skills/)
+ *     - Root .md files are individual skills
+ *     - Subdirectories containing SKILL.md are recursively discovered
+ *
+ *   allowRootMd = false (~/.agents/skills/, .agents/skills/ ancestors)
+ *     - Root .md files are ignored
+ *     - Only subdirectories containing SKILL.md are discovered
  */
 export async function loadRemoteSkills(
   fs: FsOps,
   dir: string,
-): Promise<Array<{ name: string; description: string; filePath: string }>> {
-  const skills: Array<{ name: string; description: string; filePath: string }> = [];
+  allowRootMd = false,
+): Promise<Skill[]> {
+  const skills: Skill[] = [];
   const entries = await fs.list(dir);
+  if (entries.length === 0) return skills;
 
-  // If this directory contains SKILL.md, treat it as a skill root — don't recurse further
-  if (entries.some(e => e === "SKILL.md")) {
-    const filePath = fs.join(dir, "SKILL.md");
-    const raw = await fs.read(filePath);
-    if (raw) {
-      const { fromMatter } = parseFrontmatter(raw);
-      const description = fromMatter["description"]?.trim();
-      if (description) {
-        const name = fromMatter["name"] || dir.split("/").pop() || "unknown";
-        skills.push({ name, description, filePath });
-      }
-    }
-    return skills;
-  }
-
-  // Otherwise recurse into subdirectories
   for (const entry of entries) {
     if (entry.startsWith(".") || entry === "node_modules") continue;
     const fullPath = fs.join(dir, entry);
-    // Heuristic: entries without extension are likely directories
+
+    if (entry === "SKILL.md") {
+      // This dir itself is a skill root (called from parent recursion)
+      const skill = await loadSkillFile(fs, fullPath);
+      if (skill) skills.push(skill);
+      return skills; // don't recurse further into a skill root
+    }
+
+    if (entry.endsWith(".md")) {
+      // Root .md file — only allowed in pi/agent mode
+      if (allowRootMd) {
+        const skill = await loadSkillFile(fs, fullPath);
+        if (skill) skills.push(skill);
+      }
+      continue;
+    }
+
+    // Assume directory — recurse (SKILL.md check above handles skill roots)
     if (!entry.includes(".")) {
-      skills.push(...await loadRemoteSkills(fs, fullPath));
+      skills.push(...await loadRemoteSkills(fs, fullPath, allowRootMd));
     }
   }
 
   return skills;
-}
-
-export function formatSkillsBlock(skills: Array<{ name: string; description: string; filePath: string }>): string {
-  if (skills.length === 0) return "";
-  const escape = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-  const lines = [
-    "\n\nThe following skills provide specialized instructions for specific tasks.",
-    "Use the read tool to load a skill's file when the task matches its description.",
-    "",
-    "<available_skills>",
-    ...skills.flatMap(s => [
-      "  <skill>",
-      `    <name>${escape(s.name)}</name>`,
-      `    <description>${escape(s.description)}</description>`,
-      `    <location>${escape(s.filePath)}</location>`,
-      "  </skill>",
-    ]),
-    "</available_skills>",
-  ];
-  return lines.join("\n");
 }
 
 // — agents.md link-following —
@@ -241,16 +269,21 @@ export function formatLinkedFilesBlock(files: LoadedFile[]): string {
   if (files.length === 0) return "";
   const escape = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
   const lines = [
-    "## Available Content Files (not auto-loaded)\n",
-    "Use the 'read' tool on the path shown below whenever a file's description is relevant to the current task.\n",
-    "<available_files>",
+    "## On-Demand Files\n",
+    "<on-demand-files>",
+    "  <load-rule>",
+    "    IF the current task requires knowledge described in a file below → call the read tool on that file before proceeding.",
+    "    IF no description matches the task → skip all files.",
+    "  </load-rule>",
+    "  <available_files>",
     ...files.flatMap(f => [
-      "  <file>",
-      `    <path>${escape(f.filePath)}</path>`,
-      `    <description>${escape(f.description)}</description>`,
-      "  </file>",
+      "    <file>",
+      `      <path>${escape(f.filePath)}</path>`,
+      `      <description>${escape(f.description)}</description>`,
+      "    </file>",
     ]),
-    "</available_files>",
+    "  </available_files>",
+    "</on-demand-files>",
   ];
   return lines.join("\n");
 }

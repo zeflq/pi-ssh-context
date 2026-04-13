@@ -48,9 +48,9 @@ describe("findAgentsDir", () => {
     expect(await findAgentsDir(fs, "/project")).toBe("/project/.claude");
   });
 
-  it("finds .agent as last fallback", async () => {
-    const fs = makeFsOps({ "/project/.agent/agents.md": "# root" });
-    expect(await findAgentsDir(fs, "/project")).toBe("/project/.agent");
+  it("finds .agents as last fallback", async () => {
+    const fs = makeFsOps({ "/project/.agents/agents.md": "# root" });
+    expect(await findAgentsDir(fs, "/project")).toBe("/project/.agents");
   });
 
   it("prefers .pi over .claude when both exist", async () => {
