@@ -1,20 +1,15 @@
 /**
- * SSH parity extension.
+ * SSH context extension (Layer 0 + Layer 1).
  *
- * Replicates pi's remote resource loading over SSH (only when --ssh is active;
- * pi handles local natively):
- *   resources_discover — exposes remote skill paths to pi's native loader
- *   before_agent_start — Layer 0: SYSTEM.md / APPEND_SYSTEM.md
- *                        Layer 1: AGENTS.md / CLAUDE.md walk-up
+ * Loads SYSTEM.md / APPEND_SYSTEM.md and AGENTS.md / CLAUDE.md from the
+ * remote machine over SSH. No-ops when --ssh is not active.
  */
 
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import { join as posixJoin } from "node:path/posix";
 import { sshExec, sshFs } from "../src/fs-ops.js";
 import { readSshFlag, resolveSshState, type SshState } from "../src/ssh.js";
 import {
   CONFIG_DIR_NAMES,
-  collectAncestorSkillDirs,
   loadProjectContextFiles,
   readFileFromDir,
 } from "../src/loader.js";
@@ -25,40 +20,6 @@ export default function (pi: ExtensionAPI) {
   const sshStateReady = sshFlag
     ? resolveSshState(sshFlag).then((s) => { sshState = s; })
     : Promise.resolve();
-
-  // Returns git root resolved from the remote cwd (not the SSH session's home dir).
-  async function getRemoteGitRoot(remote: string, cwd: string): Promise<string | null> {
-    const out = await sshExec(remote, `cd ${JSON.stringify(cwd)} && git rev-parse --show-toplevel 2>/dev/null || true`)
-      .catch(() => "");
-    return out.trim() || null;
-  }
-
-  // Expose remote skill paths to pi's native loader so they appear in the
-  // debug panel and are registered as /skill:name commands.
-  // For localhost paths are identical on disk and load natively.
-  // For true remote hosts pi silently skips non-existent local paths.
-  pi.on("resources_discover", async (_event, _ctx) => {
-    await sshStateReady;
-    if (!sshState) return;
-
-    const cwd = sshState.remoteCwd;
-    const fs = sshFs(sshState.remote);
-    const gitRoot = await getRemoteGitRoot(sshState.remote, cwd);
-
-    // pi-mono project skill locations:
-    //   .pi/skills/            (allowRootMd=true)
-    //   .agents/skills/ + ancestors up to git root (allowRootMd=false)
-    const candidates = [
-      ...CONFIG_DIR_NAMES.map(name => posixJoin(cwd, name, "skills")),
-      ...collectAncestorSkillDirs(fs, cwd, gitRoot),
-    ];
-
-    const skillPaths = (
-      await Promise.all(candidates.map(async p => (await fs.exists(p)) ? p : null))
-    ).filter((p): p is string => p !== null);
-
-    return { skillPaths };
-  });
 
   pi.on("before_agent_start", async (event, _ctx) => {
     await sshStateReady;

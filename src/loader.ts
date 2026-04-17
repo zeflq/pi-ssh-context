@@ -144,10 +144,10 @@ export function collectAncestorSkillDirs(fs: FsOps, cwd: string, gitRoot: string
  * Merges skill arrays from multiple sources, deduplicating by name (first wins).
  */
 export function mergeSkills(
-  ...batches: Array<Array<{ name: string; description: string; filePath: string }>>
-): Array<{ name: string; description: string; filePath: string }> {
+  ...batches: Array<Array<{ name: string; description: string; filePath: string; content: string }>>
+): Array<{ name: string; description: string; filePath: string; content: string }> {
   const seen = new Set<string>();
-  const result: Array<{ name: string; description: string; filePath: string }> = [];
+  const result: Array<{ name: string; description: string; filePath: string; content: string }> = [];
   for (const batch of batches) {
     for (const skill of batch) {
       if (!seen.has(skill.name)) {
@@ -159,7 +159,7 @@ export function mergeSkills(
   return result;
 }
 
-type Skill = { name: string; description: string; filePath: string };
+type Skill = { name: string; description: string; filePath: string; content: string };
 
 /**
  * Loads a single SKILL.md file into a Skill, or null if invalid.
@@ -171,7 +171,7 @@ async function loadSkillFile(fs: FsOps, filePath: string): Promise<Skill | null>
   const description = fromMatter["description"]?.trim();
   if (!description) return null;
   const name = fromMatter["name"] || filePath.split("/").slice(-2, -1)[0] || "unknown";
-  return { name, description, filePath };
+  return { name, description, filePath, content: raw };
 }
 
 /**

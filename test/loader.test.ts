@@ -185,14 +185,14 @@ describe("collectAncestorSkillDirs", () => {
 
 describe("mergeSkills", () => {
   it("merges multiple batches", () => {
-    const a = [{ name: "git", description: "Git skill", filePath: "/a/git/SKILL.md" }];
-    const b = [{ name: "deploy", description: "Deploy skill", filePath: "/b/deploy/SKILL.md" }];
+    const a = [{ name: "git", description: "Git skill", filePath: "/a/git/SKILL.md", content: "" }];
+    const b = [{ name: "deploy", description: "Deploy skill", filePath: "/b/deploy/SKILL.md", content: "" }];
     expect(mergeSkills(a, b)).toHaveLength(2);
   });
 
   it("first batch wins on name collision", () => {
-    const a = [{ name: "git", description: "from a", filePath: "/a/SKILL.md" }];
-    const b = [{ name: "git", description: "from b", filePath: "/b/SKILL.md" }];
+    const a = [{ name: "git", description: "from a", filePath: "/a/SKILL.md", content: "" }];
+    const b = [{ name: "git", description: "from b", filePath: "/b/SKILL.md", content: "" }];
     const result = mergeSkills(a, b);
     expect(result).toHaveLength(1);
     expect(result[0].description).toBe("from a");
