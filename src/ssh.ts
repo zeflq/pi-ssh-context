@@ -31,7 +31,10 @@ export async function resolveSshState(flag: string): Promise<SshState> {
   const colonIdx = flag.indexOf(":");
   if (colonIdx !== -1) {
     const remote = flag.slice(0, colonIdx);
-    const remoteCwd = flag.slice(colonIdx + 1);
+    const rawCwd = flag.slice(colonIdx + 1);
+    // Resolve to absolute path: handles ~, relative paths, and symlinks.
+    // Unquoted so the remote shell expands ~ and processes the path normally.
+    const remoteCwd = (await sshExec(remote, `cd ${rawCwd} && pwd`)).trim();
     return { remote, remoteCwd };
   }
   const remoteCwd = (await sshExec(flag, "pwd")).trim();

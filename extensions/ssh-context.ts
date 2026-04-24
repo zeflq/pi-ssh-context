@@ -17,13 +17,23 @@ import {
 export default function (pi: ExtensionAPI) {
   const sshFlag = readSshFlag();
   let sshState: SshState | null = null;
+  let sshStateError: string | null = null;
   const sshStateReady = sshFlag
-    ? resolveSshState(sshFlag).then((s) => { sshState = s; })
+    ? resolveSshState(sshFlag)
+      .then((s) => { sshState = s; })
+      .catch((err) => { sshStateError = err instanceof Error ? err.message : String(err); })
     : Promise.resolve();
 
   pi.on("before_agent_start", async (event, _ctx) => {
     await sshStateReady;
-    if (!sshState) return;
+    if (!sshState) {
+      if (sshStateError) {
+        return {
+          systemPrompt: `${event.systemPrompt}\n\n> [ssh-context] Failed to resolve SSH target: ${sshStateError}\n> Check the --ssh flag format: user@host:~/path or user@host:/absolute/path`,
+        };
+      }
+      return;
+    }
 
     const fs = sshFs(sshState.remote);
     const cwd = sshState.remoteCwd;

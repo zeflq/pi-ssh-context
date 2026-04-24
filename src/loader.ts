@@ -77,8 +77,13 @@ export async function walkUpContextFiles(
     const searchDirs = [currentDir, ...CONFIG_DIR_NAMES.map(n => fs.join(currentDir, n))];
     const levelFiles: Array<{ path: string; content: string }> = [];
     for (const dir of searchDirs) {
+      // List the directory once, then match case-insensitively — handles Linux
+      // filesystems where the actual filename may differ in case.
+      const entries = await fs.list(dir);
       for (const filename of CONTEXT_FILE_NAMES) {
-        const path = fs.join(dir, filename);
+        const match = entries.find(e => e.toLowerCase() === filename.toLowerCase());
+        if (!match) continue;
+        const path = fs.join(dir, match);
         if (seenPaths.has(path)) continue;
         const content = await fs.read(path);
         if (content !== null) {
